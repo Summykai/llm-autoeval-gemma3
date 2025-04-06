@@ -5,11 +5,11 @@ start=$(date +%s)
 # --- Gemma 3 Evaluation Settings (Applied where applicable below) ---
 # Reference: Gemma 3 Technical Report
 # Key Settings potentially applied:
-# - Model Args: Use bfloat16, trust_remote_code=True
+# - Model Args: Use bfloat16, trust_remote_code=True, explicit model_max_length
 # - Input Formatting: Specific turn structure (<start_of_turn>user/model ... <end_of_turn>) with BOS prepended.
 #   -> Implemented via --apply_chat_template and --fewshot_as_multiturn flags in lm-eval for specific benchmarks (HellaSwag, MMLU, WinoGrande, GSM8K).
 #   -> Assumes the tokenizer for MODEL_ID implements the correct Gemma 3 template.
-# - Default Inference (Sampling): temperature=1.0, top_p=0.95, top_k=64
+# - Default Inference (Sampling): temperature=1.0, top_p=0.95, top_k=64, do_sample=True
 #   -> Implemented via --gen_kwargs for sampling tasks (GSM8K).
 # - Benchmark Specifics: N-shot counts adjusted for HellaSwag (10), MMLU (5), WinoGrande (5), GSM8K (8).
 # ---
@@ -66,7 +66,11 @@ fi
 # --- Common Model Arguments (Adjusted for Gemma 3 where applicable) ---
 # Using bfloat16 as typically recommended for recent models like Gemma 3
 # TRUST_REMOTE_CODE is passed as an environment variable
-BASE_MODEL_ARGS="pretrained=${MODEL_ID},dtype=bfloat16,trust_remote_code=$TRUST_REMOTE_CODE"
+# **Explicitly set model_max_length to prevent incorrect detection (e.g., 2048) by the harness**
+# Using 131072 as specified by user. Reduce if OOM occurs. Gemma 3 base often uses 8192.
+MODEL_MAX_LENGTH=131072
+echo "INFO: Setting model_max_length to $MODEL_MAX_LENGTH in model args."
+BASE_MODEL_ARGS="pretrained=${MODEL_ID},dtype=bfloat16,trust_remote_code=$TRUST_REMOTE_CODE,model_max_length=$MODEL_MAX_LENGTH"
 
 # --- Evaluation Execution ---
 
@@ -74,12 +78,13 @@ BASE_MODEL_ARGS="pretrained=${MODEL_ID},dtype=bfloat16,trust_remote_code=$TRUST_
 if [ "$BENCHMARK" == "nous" ]; then
     # This benchmark suite uses a specific fork and tasks.
     # Applying Gemma 3's bfloat16 dtype, but keeping task/fewshot/prompting structure as defined by this suite.
+    # Note: Max length and specific Gemma 3 formatting might not apply correctly here due to different script structure.
     echo "Running Nous Benchmark Suite (Applying bfloat16 dtype)"
     git clone -b add-agieval https://github.com/dmahan93/lm-evaluation-harness # Using specific fork for nous tasks
     cd lm-evaluation-harness
     pip install -e .
 
-    # Nous model args - using python main.py structure requires slightly different format
+    # Nous model args - applying bfloat16 but *not* max_length override as it might not be supported by this older structure
     NOUS_MODEL_ARGS="pretrained=$MODEL_ID,trust_remote_code=$TRUST_REMOTE_CODE,dtype=bfloat16"
 
     benchmark="agieval"
@@ -90,7 +95,7 @@ if [ "$BENCHMARK" == "nous" ]; then
         --tasks agieval_aqua_rat,agieval_logiqa_en,agieval_lsat_ar,agieval_lsat_lr,agieval_lsat_rc,agieval_sat_en,agieval_sat_en_without_passage,agieval_sat_math \
         --device cuda \ # Note: Nous script used explicit device, may need adjustment for multi-GPU
         --batch_size auto \
-        --output_path ./${benchmark}.json \
+        --output_path ../${benchmark}.json \ # Save output one level up
         --verbosity $VERBOSITY \
         $LIMIT_FLAG # Apply limit if set
 
@@ -102,7 +107,7 @@ if [ "$BENCHMARK" == "nous" ]; then
         --tasks hellaswag,openbookqa,winogrande,arc_easy,arc_challenge,boolq,piqa \
         --device cuda \
         --batch_size auto \
-        --output_path ./${benchmark}.json \
+        --output_path ../${benchmark}.json \ # Save output one level up
         --verbosity $VERBOSITY \
         $LIMIT_FLAG # Apply limit if set
 
@@ -114,7 +119,7 @@ if [ "$BENCHMARK" == "nous" ]; then
         --tasks truthfulqa_mc \
         --device cuda \
         --batch_size auto \
-        --output_path ./${benchmark}.json \
+        --output_path ../${benchmark}.json \ # Save output one level up
         --verbosity $VERBOSITY \
         $LIMIT_FLAG # Apply limit if set
 
@@ -126,7 +131,7 @@ if [ "$BENCHMARK" == "nous" ]; then
         --tasks bigbench_causal_judgement,bigbench_date_understanding,bigbench_disambiguation_qa,bigbench_geometric_shapes,bigbench_logical_deduction_five_objects,bigbench_logical_deduction_seven_objects,bigbench_logical_deduction_three_objects,bigbench_movie_recommendation,bigbench_navigate,bigbench_reasoning_about_colored_objects,bigbench_ruin_names,bigbench_salient_translation_error_detection,bigbench_snarks,bigbench_sports_understanding,bigbench_temporal_sequences,bigbench_tracking_shuffled_objects_five_objects,bigbench_tracking_shuffled_objects_seven_objects,bigbench_tracking_shuffled_objects_three_objects \
         --device cuda \
         --batch_size auto \
-        --output_path ./${benchmark}.json \
+        --output_path ../${benchmark}.json \ # Save output one level up
         --verbosity $VERBOSITY \
         $LIMIT_FLAG # Apply limit if set
 
@@ -141,18 +146,18 @@ elif [ "$BENCHMARK" == "openllm" ] || [ "$BENCHMARK" == "gemma3" ]; then
     fi
 
     # Use the official lm-evaluation-harness installed via pip
-    # Common model args defined above: $BASE_MODEL_ARGS
+    # Common model args defined above: $BASE_MODEL_ARGS (includes max_length override)
 
     # --- Gemma 3 Specific Formatting/Generation Arguments ---
     # Apply chat template and format few-shot as multi-turn for specific tasks
     GEMMA_CHAT_ARGS="--apply_chat_template --fewshot_as_multiturn"
-    # Sampling parameters for GSM8K
-    GEMMA_GEN_KWARGS="temperature=1.0,top_p=0.95,top_k=64"
+    # Sampling parameters for GSM8K - IMPORTANT: Added do_sample=True
+    GEMMA_GEN_KWARGS="temperature=1.0,top_p=0.95,top_k=64,do_sample=True"
 
     # --- Benchmark Runs ---
 
     # ARC Challenge (Original OpenLLM setup: 25-shot)
-    # Not specified in Gemma 3 report, keeping original shot count. Applying bfloat16 dtype. Chat template not applied.
+    # Using BASE_MODEL_ARGS (incl max_length), keeping original shot count. Chat template not applied.
     benchmark="arc"
     echo "================== $(echo $benchmark | tr '[:lower:]' '[:upper:]') [1/6] (Original 25-shot) =================="
     accelerate launch -m lm_eval \
@@ -180,6 +185,7 @@ elif [ "$BENCHMARK" == "openllm" ] || [ "$BENCHMARK" == "gemma3" ]; then
         $LIMIT_FLAG # Apply limit if set
 
     # MMLU (Gemma 3 Spec: 5-shot, Chat Format)
+    # Using BASE_MODEL_ARGS (incl max_length override)
     benchmark="mmlu"
     echo "================== $(echo $benchmark | tr '[:lower:]' '[:upper:]') [3/6] (Gemma 3 Spec: 5-shot, Chat Format) =================="
     accelerate launch -m lm_eval \
@@ -194,7 +200,7 @@ elif [ "$BENCHMARK" == "openllm" ] || [ "$BENCHMARK" == "gemma3" ]; then
         $LIMIT_FLAG # Apply limit if set
 
     # TruthfulQA (Original OpenLLM setup: 0-shot)
-    # Not specified in Gemma 3 report, keeping original shot count. Applying bfloat16 dtype. Chat template not applied (0-shot).
+    # Using BASE_MODEL_ARGS (incl max_length), keeping original shot count. Chat template not applied (0-shot).
     benchmark="truthfulqa"
     echo "================== $(echo $benchmark | tr '[:lower:]' '[:upper:]') [4/6] (Original 0-shot) =================="
     accelerate launch -m lm_eval \
@@ -222,6 +228,7 @@ elif [ "$BENCHMARK" == "openllm" ] || [ "$BENCHMARK" == "gemma3" ]; then
         $LIMIT_FLAG # Apply limit if set
 
     # GSM8K (Gemma 3 Spec: 8-shot, Chat Format, Sampling Params)
+    # Using BASE_MODEL_ARGS (incl max_length), applying specific gen_kwargs (incl do_sample=True)
     benchmark="gsm8k"
     echo "================== $(echo $benchmark | tr '[:lower:]' '[:upper:]') [6/6] (Gemma 3 Spec: 8-shot, Chat Format, Sampling) =================="
     accelerate launch -m lm_eval \
@@ -231,7 +238,7 @@ elif [ "$BENCHMARK" == "openllm" ] || [ "$BENCHMARK" == "gemma3" ]; then
         --num_fewshot 8 `# Gemma 3 Spec` \
         --batch_size auto \
         $GEMMA_CHAT_ARGS `# Gemma 3 Spec` \
-        --gen_kwargs "$GEMMA_GEN_KWARGS" `# Gemma 3 Spec` \
+        --gen_kwargs "$GEMMA_GEN_KWARGS" `# Gemma 3 Spec + do_sample=True` \
         --output_path ./${benchmark}_eval.json \
         --verbosity $VERBOSITY \
         $LIMIT_FLAG # Apply limit if set
@@ -239,19 +246,18 @@ elif [ "$BENCHMARK" == "openllm" ] || [ "$BENCHMARK" == "gemma3" ]; then
 elif [ "$BENCHMARK" == "lighteval" ]; then
     # This benchmark uses the lighteval framework.
     # Applying Gemma 3's bfloat16 dtype. Using lighteval's own --use_chat_template.
-    echo "Running Lighteval Benchmark Suite (Applying bfloat16 dtype, using lighteval's chat template flag)"
+    # Adding model_max_length override here too for consistency.
+    echo "Running Lighteval Benchmark Suite (Applying bfloat16 dtype, max_length, using lighteval's chat template flag)"
     git clone https://github.com/huggingface/lighteval.git
     cd lighteval
     pip install '.[accelerate,quantization,adapters]' # Install lighteval with extras
 
-    # Lighteval model args - Ensure bfloat16 and trust_remote_code are included
-    LIGHTEVAL_MODEL_ARGS="pretrained=${MODEL_ID},trust_remote_code=$TRUST_REMOTE_CODE,dtype=bfloat16"
+    # Lighteval model args - Add model_max_length
+    LIGHTEVAL_MODEL_ARGS="pretrained=${MODEL_ID},trust_remote_code=$TRUST_REMOTE_CODE,dtype=bfloat16,model_max_length=$MODEL_MAX_LENGTH"
 
-    # Note: Lighteval might have a different flag for limiting instances.
-    # Checking lighteval help, it seems to use --limit as well.
     echo "Running lighteval with accelerate..."
     accelerate launch run_evals_accelerate.py \
-        --model_args $LIGHTEVAL_MODEL_ARGS \
+        --model_args "$LIGHTEVAL_MODEL_ARGS" \
         --use_chat_template `# Lighteval's flag, assumes it uses the correct template from tokenizer` \
         --tasks "${LIGHT_EVAL_TASK}" \
         --output_dir="./evals/" \
@@ -262,8 +268,8 @@ elif [ "$BENCHMARK" == "lighteval" ]; then
 
 elif [ "$BENCHMARK" == "eq-bench" ]; then
     # This benchmark uses lm-eval harness for the eq-bench task.
-    # Applying Gemma 3's bfloat16 dtype. Keeping 0-shot setup. Chat template not applied (0-shot).
-    echo "Running EQ-Bench (Applying bfloat16 dtype, original 0-shot)"
+    # Applying Gemma 3's bfloat16 dtype and max_length. Keeping 0-shot setup. Chat template not applied (0-shot).
+    echo "Running EQ-Bench (Applying bfloat16 dtype, max_length, original 0-shot)"
     # Assuming lm-eval is already installed
 
     benchmark="eq-bench"
@@ -290,30 +296,28 @@ end=$(date +%s)
 elapsed_time=$(($end-$start))
 echo "Evaluation Complete. Elapsed Time: $elapsed_time seconds"
 
-# Consolidate results (assuming llm-autoeval/main.py exists one level up)
+# Consolidate results (assuming llm-autoeval/main.py exists in the current dir or one level up)
 # Adjust the path passed to main.py based on where the output files are saved.
-output_dir="." # Default for nous, openllm/gemma3 benchmarks saved in current dir
+output_dir="." # Default for nous, openllm/gemma3 benchmarks saved in current dir relative to script exec
 if [ "$BENCHMARK" == "lighteval" ]; then
     # Lighteval results are inside ./lighteval/evals/
     output_dir="./lighteval/evals/"
 elif [ "$BENCHMARK" == "eq-bench" ]; then
     output_dir="./evals" # Specific path for eq-bench results
+elif [ "$BENCHMARK" == "nous" ]; then
+    output_dir="." # nous results were saved relative to where python main.py ran (../ -> .)
 fi
 
-# Find the consolidation script robustly
+
+# Find the consolidation script robustly relative to this script's location
+script_dir=$(dirname "$0")
 consolidation_script_path=""
-# Look in parent directory's llm-autoeval subdir
-if [ -f "../llm-autoeval/main.py" ]; then
-    consolidation_script_path="../llm-autoeval/main.py"
-# Look in current directory's llm-autoeval subdir (if script is run from repo root)
-elif [ -f "./llm-autoeval/main.py" ]; then
-     consolidation_script_path="./llm-autoeval/main.py"
-# Look directly in parent directory (if script is inside llm-autoeval)
-elif [ -f "../main.py" ]; then
-     consolidation_script_path="../main.py"
-# Look directly in current directory (if script is in llm-autoeval and run from there)
-elif [ -f "./main.py" ]; then
-     consolidation_script_path="./main.py"
+# Look relative to script dir
+if [ -f "${script_dir}/main.py" ]; then
+     consolidation_script_path="${script_dir}/main.py"
+# Look in parent directory (if script is inside llm-autoeval dir)
+elif [ -f "${script_dir}/../main.py" ]; then
+     consolidation_script_path="${script_dir}/../main.py"
 fi
 
 
@@ -321,12 +325,12 @@ if [ -n "$consolidation_script_path" ]; then
     echo "Running consolidation script from: $consolidation_script_path"
     # Ensure output_dir exists before passing it
     mkdir -p "$output_dir"
-    # Check if results files actually exist before calling consolidation
-    # Heuristic: Check for any *.json file in the expected output directory
-    if ls "${output_dir}"/*.json 1> /dev/null 2>&1; then
+    # Check if results files/dirs actually exist before calling consolidation
+    # Heuristic: Check for any *.json item (file or dir) in the expected output directory
+    if ls "${output_dir}" | grep -q '\.json'; then
        python "$consolidation_script_path" "$output_dir" $elapsed_time
     else
-       echo "Warning: No JSON result files found in '$output_dir'. Skipping result consolidation."
+       echo "Warning: No JSON result files/dirs found in '$output_dir'. Skipping result consolidation."
     fi
 else
     echo "Warning: Consolidation script 'main.py' (from llm-autoeval) not found. Skipping result consolidation."
