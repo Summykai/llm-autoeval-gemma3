@@ -3,10 +3,18 @@ import json
 import logging
 import os
 import time
+import glob # Import glob for finding files with patterns
 
 # Assuming these modules exist in the llm_autoeval package/directory
-from llm_autoeval.table import make_final_table, make_table
-from llm_autoeval.upload import upload_to_github_gist
+# Make sure these imports work relative to where main.py is run
+try:
+    from llm_autoeval.table import make_final_table, make_table
+    from llm_autoeval.upload import upload_to_github_gist
+except ImportError:
+    # Fallback if running script directly and modules are in the same dir
+    from table import make_final_table, make_table
+    from upload import upload_to_github_gist
+
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -16,6 +24,55 @@ BENCHMARK = os.getenv("BENCHMARK", "Unknown_Benchmark") # Add default
 GITHUB_API_TOKEN = os.getenv("GITHUB_API_TOKEN")
 
 
+def find_actual_json(base_path: str, benchmark_type: str) -> str | None:
+    """
+    Finds the actual results_*.json file.
+    For nous, assumes base_path is the file.
+    For others, assumes base_path is a directory containing a model subdir.
+    """
+    if benchmark_type == "nous":
+        # Nous benchmark expects flat files
+        if os.path.isfile(base_path):
+            logger.info(f"Found potential flat file for 'nous' benchmark: {base_path}")
+            return base_path
+        else:
+            logger.warning(f"'nous' benchmark specified, but path is not a file: {base_path}")
+            return None
+    else:
+        # Other benchmarks (openllm, gemma3, eq-bench) expect nested dirs
+        if not os.path.isdir(base_path):
+            logger.warning(f"Expected results directory not found or is not a directory: {base_path}")
+            return None
+
+        try:
+            # Find the model subdirectory (take the first one found)
+            subdirs = [d for d in os.listdir(base_path) if os.path.isdir(os.path.join(base_path, d))]
+            if not subdirs:
+                logger.warning(f"No model subdirectories found inside {base_path}")
+                return None
+
+            model_subdir_name = subdirs[0]
+            model_subdir_path = os.path.join(base_path, model_subdir_name)
+            logger.info(f"Searching within model subdirectory: {model_subdir_path}")
+
+            # Find the results_*.json file using glob for pattern matching
+            results_files = glob.glob(os.path.join(model_subdir_path, "results_*.json"))
+            if not results_files:
+                logger.warning(f"No 'results_*.json' file found inside {model_subdir_path}")
+                return None
+
+            actual_json_path = results_files[0] # Use the first match
+            logger.info(f"Found results JSON file: {actual_json_path}")
+            return actual_json_path
+
+        except OSError as e:
+            logger.error(f"Error accessing directory {base_path} or its subdirectories: {e}")
+            return None
+        except Exception as e: # Catch other potential errors
+            logger.error(f"Unexpected error traversing directory {base_path}: {e}")
+            return None
+
+
 def _make_autoeval_summary(directory: str, elapsed_time: float) -> str:
     """Generates summary table for lm-evaluation-harness results."""
     tables = []
@@ -23,102 +80,110 @@ def _make_autoeval_summary(directory: str, elapsed_time: float) -> str:
     file_suffix = "" # Default suffix
 
     # Define tasks and filename suffix based on BENCHMARK
+    # This determines the base path name (file for nous, dir for others)
     if BENCHMARK == "openllm" or BENCHMARK == "gemma3":
         tasks = ["ARC", "HellaSwag", "MMLU", "TruthfulQA", "Winogrande", "GSM8K"]
-        file_suffix = "_eval" # Filename suffix used in runpod.py
-        logger.info(f"Processing benchmark '{BENCHMARK}' with tasks: {tasks} and filename suffix: '{file_suffix}.json'")
+        file_suffix = "_eval" # Expected base name suffix for dir/file
+        logger.info(f"Processing benchmark '{BENCHMARK}' with tasks: {tasks}. Expecting dirs ending '{file_suffix}.json'")
     elif BENCHMARK == "nous":
         tasks = ["AGIEval", "GPT4All", "TruthfulQA", "Bigbench"]
-        file_suffix = "" # Nous uses plain filenames
-        logger.info(f"Processing benchmark '{BENCHMARK}' with tasks: {tasks} and filename suffix: '.json'")
+        file_suffix = "" # Nous expects plain filenames
+        logger.info(f"Processing benchmark '{BENCHMARK}' with tasks: {tasks}. Expecting files ending '.json'")
     elif BENCHMARK == "eq-bench":
         tasks = ["EQ-Bench"]
-        file_suffix = "_eval" # EQ-Bench also uses _eval suffix in runpod.py
-        logger.info(f"Processing benchmark '{BENCHMARK}' with tasks: {tasks} and filename suffix: '{file_suffix}.json'")
+        file_suffix = "_eval" # Expected base name suffix for dir/file
+        logger.info(f"Processing benchmark '{BENCHMARK}' with tasks: {tasks}. Expecting dirs ending '{file_suffix}.json'")
     else:
-        # This case should ideally be caught in main(), but added defensively
         logger.error(f"Benchmark '{BENCHMARK}' is not recognized for summary generation.")
         return f"Error: Benchmark '{BENCHMARK}' not recognized."
 
-    # Load results for each task
+    # --- Loop through tasks to find and process results ---
     for task in tasks:
         task_lower = task.lower()
-        # Construct the expected filename
-        # Special case for eq-bench task name vs filename base
+        # Construct the expected base path name (could be file or dir)
+        filename_base = task_lower
         if BENCHMARK == "eq-bench" and task == "EQ-Bench":
              filename_base = "eq-bench"
-        else:
-             filename_base = task_lower
 
-        file_path = os.path.join(directory, f"{filename_base}{file_suffix}.json")
-        logger.info(f"Looking for results file: {file_path}")
+        # This is the expected name of the file (for nous) or directory (for others)
+        expected_base_path = os.path.join(directory, f"{filename_base}{file_suffix}.json")
 
-        if os.path.exists(file_path):
+        # Find the actual path to the results JSON, handling nesting
+        actual_json_path = find_actual_json(expected_base_path, BENCHMARK)
+
+        # Process the found JSON file (if any)
+        if actual_json_path:
             try:
-                with open(file_path, "r") as f:
+                with open(actual_json_path, "r") as f:
                     json_data = f.read()
-                    # Handle potential trailing commas or other minor JSON issues if necessary
                     data = json.loads(json_data, strict=False)
-                table, average = make_table(data, task) # Assumes make_table handles parsing
-                logger.info(f"Successfully processed {task}. Average: {average}")
+                # Pass the loaded data to table/average functions
+                table, average = make_table(data, task) # Assumes make_table takes data dict and task name
+                logger.info(f"Successfully processed '{task}' from '{actual_json_path}'. Average: {average}")
             except json.JSONDecodeError as e:
-                logger.error(f"Error decoding JSON from {file_path}: {e}")
-                table = f"Error: Invalid JSON in {file_path}"
+                logger.error(f"Error decoding JSON from {actual_json_path}: {e}")
+                table = f"Error: Invalid JSON"
                 average = f"Error: Invalid JSON"
             except Exception as e:
-                logger.error(f"Error processing file {file_path}: {e}")
-                table = f"Error: Processing failed for {file_path}"
+                logger.error(f"Error processing file {actual_json_path} for task '{task}': {e}")
+                table = f"Error: Processing failed"
                 average = f"Error: Processing failed"
         else:
-            logger.warning(f"Results file not found: {file_path}")
-            table = f"Error: File does not exist ({os.path.basename(file_path)})"
-            average = f"Error: File does not exist"
+            # Handle case where JSON path wasn't found
+            logger.warning(f"Results JSON file could not be located for task '{task}' (expected path: {expected_base_path})")
+            table = f"Error: Results file not found for {task}"
+            average = f"Error: Results file not found"
 
         tables.append(table)
         averages.append(average)
+        # Ensure data is not accidentally carried over from previous loop iteration
+        data = None
 
-    # Generate summary sections
+    # --- Generate summary sections ---
     summary = ""
     result_dict = {}
     for index, task in enumerate(tasks):
         # Only add % sign if average is a float/number
         avg_display = f"{averages[index]}%" if isinstance(averages[index], (int, float)) else averages[index]
-        summary += f"### {task}\n{tables[index]}\nAverage: {avg_display}\n\n"
+        # Make table heading bold
+        summary += f"### **{task}**\n{tables[index]}\nAverage: {avg_display}\n\n"
         result_dict[task] = averages[index] # Store original value for final average calculation
 
-    # Calculate the final average, excluding strings/errors
+    # --- Calculate the final average, excluding strings/errors ---
     valid_averages = [avg for avg in averages if isinstance(avg, (int, float))]
     if valid_averages:
         final_average = round(sum(valid_averages) / len(valid_averages), 2)
-        summary += f"Average score (across valid tasks): {final_average}%"
+        summary += f"Average score (across valid tasks): **{final_average}%**" # Make average bold
         result_dict["Average"] = final_average
     else:
-        summary += "Average score: Not available (no valid task averages)"
+        summary += "Average score: **Not available** (no valid task averages)" # Make bold
         result_dict["Average"] = "N/A"
 
 
-    # Generate final summary table
+    # --- Generate final summary table ---
     final_table = make_final_table(result_dict, MODEL_ID) # Assumes make_final_table exists
     summary = final_table + "\n\n---\n\n" + summary # Add separator
     return summary
 
 
 def _get_result_dict(directory: str) -> dict:
-    """Walk down directories to get the first JSON file found."""
-    logger.info(f"Searching for JSON results in directory: {directory}")
+    """Walk down directories to get the first JSON file found (for Lighteval)."""
+    logger.info(f"Searching for JSON results (Lighteval) in directory: {directory}")
     for root, dirs, files in os.walk(directory):
         for file in files:
+            # Lighteval might not follow the 'results_' prefix convention consistently
             if file.endswith(".json"):
                 json_path = os.path.join(root, file)
-                logger.info(f"Found results JSON file: {json_path}")
+                logger.info(f"Found potential Lighteval results JSON file: {json_path}")
                 try:
                     with open(json_path, 'r') as f:
                         return json.load(f)
                 except Exception as e:
                      logger.error(f"Error reading/parsing JSON file {json_path}: {e}")
-                     raise FileNotFoundError(f"Error reading JSON in {directory}") # Re-raise or handle
+                     # Continue searching if one file fails
+    # If loop finishes without returning/raising
     logger.error(f"No JSON file found in {directory} or its subdirectories.")
-    raise FileNotFoundError(f"No JSON file found in {directory}")
+    raise FileNotFoundError(f"No JSON file found for Lighteval in {directory}")
 
 
 def _make_lighteval_summary(directory: str, elapsed_time: float) -> str:
@@ -131,15 +196,10 @@ def _make_lighteval_summary(directory: str, elapsed_time: float) -> str:
         return "Error: lighteval library not installed."
 
     try:
-        result_dict = _get_result_dict(directory)
-        # Ensure the results are in the expected format for make_results_table
-        # This might need adjustment depending on lighteval's output structure
-        if "results" in result_dict:
-             final_table = make_results_table(result_dict["results"])
-        else:
-             # Fallback if structure is different, maybe root is the results dict?
-             logger.warning("Lighteval results JSON might not have top-level 'results' key. Attempting to use root.")
-             final_table = make_results_table(result_dict)
+        result_dict = _get_result_dict(directory) # Find the JSON first
+        # Assuming make_results_table works on the loaded dictionary
+        # LightEval's structure might vary; adjust parsing if needed based on its output
+        final_table = make_results_table(result_dict)
 
         model_name = MODEL_ID.split('/')[-1] if MODEL_ID else "Unknown_Model"
         benchmark_name = BENCHMARK.capitalize() if BENCHMARK else "LightEval"
@@ -165,12 +225,7 @@ def main(directory: str, elapsed_time: float) -> None:
         summary = _make_lighteval_summary(directory, elapsed_time)
     else:
         logger.error(f"Unsupported BENCHMARK value: {BENCHMARK}")
-        # Avoid raising error, allow script to finish gracefully if needed
         summary = f"Error: Unsupported BENCHMARK value '{BENCHMARK}'. Cannot generate summary."
-        # Or re-raise if script should halt:
-        # raise NotImplementedError(
-        #     f"BENCHMARK should be 'openllm', 'nous', 'lighteval', 'eq-bench', or 'gemma3' (current value = {BENCHMARK})"
-        # )
 
     # Add elapsed time to summary
     convert = time.strftime("%H:%M:%S", time.gmtime(elapsed_time))
@@ -201,7 +256,7 @@ if __name__ == "__main__":
     # Create the parser
     parser = argparse.ArgumentParser(description="Summarize evaluation results and upload them to GitHub Gist.")
     parser.add_argument(
-        "directory", type=str, help="The path to the directory containing the JSON result files"
+        "directory", type=str, help="The path to the directory containing the evaluation results (JSON files or dirs)"
     )
     parser.add_argument(
         "elapsed_time",
@@ -214,11 +269,9 @@ if __name__ == "__main__":
 
     # Basic validation
     if not os.path.isdir(args.directory):
-        logger.error(f"The specified directory does not exist: {args.directory}")
-        # Instead of raising ValueError, exit gracefully
-        print(f"Error: The specified directory does not exist: {args.directory}")
-        exit(1) # Exit with a non-zero code to indicate failure
-        # raise ValueError(f"The directory {args.directory} does not exist.")
+        logger.error(f"The specified base directory does not exist: {args.directory}")
+        print(f"Error: The specified base directory does not exist: {args.directory}")
+        exit(1)
 
     if args.elapsed_time < 0:
          logger.warning(f"Elapsed time is negative ({args.elapsed_time}). Using 0.")
