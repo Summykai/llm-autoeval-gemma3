@@ -3,10 +3,10 @@
   <p>
     ✨ <a href="https://huggingface.co/mlabonne">Forked from mlabonne</a> • 
     🧠 <a href="https://huggingface.co/google">Supports Gemma 3</a> • 
-    🚀 <a href="https://colab.research.google.com/drive/1Igs3WZuXAIv9X0vwqiE90QlEPys8e8Oa?usp=sharing">Colab Notebook</a>
+    🚀 <a href="https://colab.research.google.com/drive/1JNk0_uQqRTyH4OfG867P3HmHj6x2CC9Q?usp=sharing">Colab Notebook</a>
   </p>
-  <p><em>Official evaluation harness fork, tailored to match Google's Gemma 3 report settings.</em></p>
-  <a href="https://colab.research.google.com/drive/1Igs3WZuXAIv9X0vwqiE90QlEPys8e8Oa?usp=sharing"><img src="img/colab.svg" alt="Open In Colab"></a>
+  <p><em>Official LLM AutoEval fork, updated for compatibility with Google's Gemma 3 based models.</em></p>
+  <a href="https://colab.research.google.com/drive/1JNk0_uQqRTyH4OfG867P3HmHj6x2CC9Q?usp=sharing"><img src="img/colab.svg" alt="Open In Colab"></a>
 </div>
 <br/>
 
@@ -24,6 +24,8 @@ This fork of **LLM AutoEval** is optimized for **evaluating Google's Gemma 3 mod
 * Benchmarks configured to match Google's evaluation (e.g. `gsm8k` 8-shot, CoT)
 * Compatibility updates for new tokenizer, prompts, and padding behavior
 * Colab + RunPod-friendly setup
+* Option to enable/disable 4bit quantization
+* Option to set limits on evaluation for quick results when experimenting
 
 ## ⚡ Quick Start
 
