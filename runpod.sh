@@ -35,7 +35,8 @@ fi
 
 # Base args for HF models: 4-bit NF4 quantization, bfloat16 compute, trust remote code
 # Relying on model's config.json for max sequence length.
-BASE_MODEL_ARGS="pretrained=${MODEL_ID},dtype=bfloat16,trust_remote_code=$TRUST_REMOTE_CODE,load_in_4bit=True,bnb_4bit_compute_dtype=torch.bfloat16,bnb_4bit_quant_type='nf4',bnb_4bit_use_double_quant=True"
+# CORRECTED: bnb_4bit_compute_dtype uses 'bfloat16', bnb_4bit_quant_type uses 'nf4' (no extra quotes)
+BASE_MODEL_ARGS="pretrained=${MODEL_ID},dtype=bfloat16,trust_remote_code=$TRUST_REMOTE_CODE,load_in_4bit=True,bnb_4bit_compute_dtype=bfloat16,bnb_4bit_quant_type=nf4,bnb_4bit_use_double_quant=True"
 echo "INFO: Using BASE_MODEL_ARGS with 4-bit NF4 quantization: $BASE_MODEL_ARGS"
 
 # Gemma 3 specific args for applicable benchmarks
@@ -47,7 +48,7 @@ GEMMA_GEN_KWARGS="temperature=1.0,top_p=0.95,top_k=64,do_sample=True"
 
 if [ "$BENCHMARK" == "nous" ]; then
     # Nous benchmark uses a specific fork/script setup. Quantization args may not apply.
-    echo "INFO: Running Nous Benchmark Suite (Applying bfloat16 dtype)"
+    echo "INFO: Running Nous Benchmark Suite (Applying bfloat16 dtype - Quantization may not apply)"
     git clone -b add-agieval https://github.com/dmahan93/lm-evaluation-harness nous-lm-eval-harness > /dev/null
     cd nous-lm-eval-harness
     pip install -q -e .
@@ -72,7 +73,7 @@ elif [ "$BENCHMARK" == "openllm" ] || [ "$BENCHMARK" == "gemma3" ]; then
     else
          echo "INFO: Running dedicated Gemma 3 Benchmark Suite"
     fi
-    echo "INFO: Using BASE_MODEL_ARGS: $BASE_MODEL_ARGS"
+    echo "INFO: Using BASE_MODEL_ARGS: $BASE_MODEL_ARGS" # Log the corrected args
 
     # ARC (Original 25-shot)
     echo "================== ARC [1/6] (Original 25-shot) =================="
@@ -104,8 +105,8 @@ elif [ "$BENCHMARK" == "lighteval" ]; then
     cd lighteval
     pip install -q '.[accelerate,quantization,adapters]'
 
-    # Adapt model args for lighteval format
-    LIGHTEVAL_MODEL_ARGS="pretrained=${MODEL_ID},trust_remote_code=${TRUST_REMOTE_CODE},dtype=bfloat16,load_in_4bit=True,bnb_4bit_compute_dtype=torch.bfloat16,bnb_4bit_quant_type='nf4',bnb_4bit_use_double_quant=True"
+    # Adapt model args for lighteval format - CORRECTED compute dtype and quant type
+    LIGHTEVAL_MODEL_ARGS="pretrained=${MODEL_ID},trust_remote_code=${TRUST_REMOTE_CODE},dtype=bfloat16,load_in_4bit=True,bnb_4bit_compute_dtype=bfloat16,bnb_4bit_quant_type=nf4,bnb_4bit_use_double_quant=True"
     echo "INFO: Lighteval model_args: $LIGHTEVAL_MODEL_ARGS"
 
     echo "INFO: Running lighteval with accelerate..."
@@ -143,28 +144,19 @@ end=$(date +%s)
 elapsed_time=$(($end-$start))
 echo "INFO: Evaluation Complete. Elapsed Time: $elapsed_time seconds"
 
-# Define output directory based on benchmark for consolidation
-output_dir="." # Default for openllm/gemma3/nous
-if [ "$BENCHMARK" == "lighteval" ]; then
-    output_dir="./lighteval/evals/"
-elif [ "$BENCHMARK" == "eq-bench" ]; then
-    output_dir="./evals"
-fi
+output_dir="."
+if [ "$BENCHMARK" == "lighteval" ]; then output_dir="./lighteval/evals/"; fi
+if [ "$BENCHMARK" == "eq-bench" ]; then output_dir="./evals"; fi
+if [ "$BENCHMARK" == "nous" ]; then output_dir="."; fi
 
-# Find consolidation script relative to this script
 script_dir=$(dirname "$0")
 consolidation_script_path=""
-if [ -f "${script_dir}/main.py" ]; then
-     consolidation_script_path="${script_dir}/main.py"
-elif [ -f "${script_dir}/../main.py" ]; then # If runpod.sh is in a subdir
-     consolidation_script_path="${script_dir}/../main.py"
-fi
+if [ -f "${script_dir}/main.py" ]; then consolidation_script_path="${script_dir}/main.py";
+elif [ -f "${script_dir}/../main.py" ]; then consolidation_script_path="${script_dir}/../main.py"; fi
 
-# Run consolidation if script found and results exist
 if [ -n "$consolidation_script_path" ]; then
     echo "INFO: Running consolidation script from: $consolidation_script_path"
     mkdir -p "$output_dir"
-    # Check if any .json file/dir exists in the output dir
     if ls "$output_dir" | grep -q '\.json'; then
        echo "INFO: Attempting to run consolidation. Ensure main.py handles nested directories if applicable."
        python "$consolidation_script_path" "$output_dir" "$elapsed_time"
@@ -175,7 +167,6 @@ else
     echo "WARN: Consolidation script 'main.py' not found relative to runpod.sh. Skipping result consolidation."
 fi
 
-# Cleanup or keep pod running
 if [ "$DEBUG" == "False" ]; then
     echo "INFO: Evaluation finished. Removing pod."
     if command -v runpodctl &> /dev/null && [ -n "$RUNPOD_POD_ID" ]; then
