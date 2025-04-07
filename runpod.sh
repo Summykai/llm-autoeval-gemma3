@@ -67,8 +67,7 @@ fi
 # Using bfloat16 as typically recommended for recent models like Gemma 3
 # TRUST_REMOTE_CODE is passed as an environment variable
 # **Explicitly set model_max_length to prevent incorrect detection (e.g., 2048) by the harness**
-# Using 131072 as specified by user. Reduce if OOM occurs. Gemma 3 base often uses 8192.
-MODEL_MAX_LENGTH=131072
+MODEL_MAX_LENGTH=8192
 echo "INFO: Setting model_max_length to $MODEL_MAX_LENGTH in model args."
 BASE_MODEL_ARGS="pretrained=${MODEL_ID},dtype=bfloat16,trust_remote_code=$TRUST_REMOTE_CODE,model_max_length=$MODEL_MAX_LENGTH"
 
